@@ -5,7 +5,7 @@ MicroServer is a lightweight web server designed to provide an easy-to-use and m
 ## Installation
 
 ```javascript
-npm install micro-server
+npm install @jiangege47/micro-server
 ```
 
 ## Usage
@@ -13,7 +13,7 @@ npm install micro-server
 Here is an example of how to use MicroServer:
 
 ```javascript
-const MicroServer = require("micro-server");
+const MicroServer = require("@jiangege47/micro-server");
 
 const server = new MicroServer();
 server.loadConfig();
