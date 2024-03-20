@@ -20,6 +20,12 @@ server.loadConfig();
 server.start();
 ```
 
+## Call func
+
+```javascript
+await server.call("test", "abc", "hello");
+```
+
 ## Loading Mechanism
 
 The MicroServer module has a specific loading mechanism for your service logic files. Here's a quick guide to help you understand how it works and where to place your service files.
