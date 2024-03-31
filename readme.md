@@ -1,51 +1,58 @@
 # MicroServer
 
-MicroServer is a lightweight web server designed to provide an easy-to-use and modular way to build web services. It is written in JavaScript and uses the Koa framework.
+极致简单的api server 框架，该框架意在快速启动 api 开发。
 
-## Installation
+### 安装
 
 ```javascript
 npm install @jiangege47/micro-server
 ```
 
-## Usage
+## 快速介绍
 
-Here is an example of how to use MicroServer:
-
+### 自动路径映射
+项目基于文件路径自动映射 api 接口，例如文件位置 `/services/test/index.js` 中有一个 **hello()** 函数。
 ```javascript
-const MicroServer = require("@jiangege47/micro-server");
-
-const server = new MicroServer();
-server.loadConfig();
-server.start();
+async function hello() {
+  return "Hello world"
+}
+module.exports = {
+  hello
+}
 ```
+hello 函数将自动映射 api 路径: `/api/test/index/hello` 。函数的返回值就是调用接口得到的返回结果。
 
-## Call func
 
+ ### GET & POST 通用
+每个函数同时支持 get 和 post 请求。它们的请求体内容都将映射到函数的第一个参数位置里。
 ```javascript
-await server.call("test", "abc", "hello");
+const hello = (req) => {
+  console.log(req.data.name) // Tom
+}
+```
+你可以通过`req.data`获取到请求体的内容(请求体内容解析基于 `koa-parser` 框架，默认支持 `form`、`json` 和 `text` 等格式)。实际请求时，请求内容格式参考以下:
+```json
+{
+  "token": null,
+   "data": {
+      "name": "Tom"
+    }
+}
 ```
 
-## Loading Mechanism
-
-The MicroServer module has a specific loading mechanism for your service logic files. Here's a quick guide to help you understand how it works and where to place your service files.
-
-### Default File Structure
-
-The default file structure for a MicroServer service is as follows:
-
-```
-root/
-  |- service/
-  |  |- logic/
-  |  |  |- service-logic.js
-  |- micro-server.js
+### token 限制
+使用 `$` 开头的函数，将比较 req.token 与 config 中 `restriction.token` 的一致性。 
+```javascript
+const $hello = (req) => {
+  console.log('test')
+}
 ```
 
-### Service Files
-
-Your service logic files should be placed in the `logic/` folder under `service/`. Each service should have its own folder under `logic/` containing one or more JavaScript files. These files should contain the logic for each service's individual functionality.
-
-### Naming Convention
-
-The naming convention for service logic files is important. Each file should be named after the service it belongs to, followed by a hyphen and the logic it provides. For example: `service-logic.js`.
+标识了 `$` 开头的函数意味着必须在请求时传递一个**token**字段:
+```
+{
+  "token": "sbxxxxxxxx",
+   "data": {}
+}
+```
+# TODO
