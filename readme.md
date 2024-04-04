@@ -1,6 +1,6 @@
 # MicroServer
 
-极致简单的api server 框架，该框架意在快速启动 api 开发。
+极致简单的api server 框架，意在快速启动 api 开发。
 
 ### 安装
 
