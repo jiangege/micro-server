@@ -24,8 +24,7 @@
     "koa-static": "^5.0.0",
     "lodash": "^4.17.21",
     "mongodb": "^4.10.0",
-    "simple-json-db": "^2.0.0",
-    "socket.io": "^4.5.2"
+    "simple-json-db": "^2.0.0"
   },
   "devDependencies": {
     "commander": "^9.4.1",
