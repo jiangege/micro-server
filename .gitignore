@@ -3,3 +3,4 @@ services/
 locales/
 test.js
 thunder-tests/
+/test

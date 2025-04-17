@@ -17,7 +17,7 @@ interface FunctionInfo {
 
 declare class MicroModule {
   microServer: MicroServer;
-  cache: Record<string, any>;
+  funcCache: Map<string, FunctionInfo>;
   serviceInfo: ModuleInfo | null;
 
   constructor(microServer: MicroServer);
@@ -29,6 +29,7 @@ declare class MicroModule {
     index?: number
   ): Promise<ModuleInfo | null>;
   load(serviceDirPath: string): Promise<ModuleInfo | null>;
+  private #buildFunctionCache(): void;
   getFunc(
     service: string,
     logic: string,
