@@ -1,19 +1,24 @@
 import path from "path";
 import Koa from "koa";
-import Router from "koa-router";
+import Router, { RouterContext } from "koa-router";
 import bodyParser from "koa-bodyparser";
 import cors from "@koa/cors";
-import multer from "@koa/multer";
 import serve from "koa-static";
-import views from "koa-views";
 import _ from "lodash";
 import Joi from "joi";
 import { createServer, Server } from "http";
 import dotenv from "dotenv";
+import fs from "fs";
 
 import MicroModule from "./module.js";
 import MicroConfigLoader from "./config.js";
 import MicroI18n from "./i18n.js";
+import {
+  createEjsMiddleware,
+  createUploadMiddleware,
+  applyUploadMiddleware,
+  UploadPathConfig,
+} from "./middlewares/index.js";
 
 interface RequestBody {
   serviceApiKey?: string;
@@ -36,7 +41,7 @@ interface MicroConfig {
   env?: string;
   upload: {
     enabled: boolean;
-    allowedPaths: RegExp[];
+    paths: UploadPathConfig[];
     multer?: any;
   };
   static: {
@@ -44,7 +49,6 @@ interface MicroConfig {
     dirName: string;
     ejs: {
       enabled: boolean;
-      extension: string;
     };
   };
   restriction: {
@@ -82,14 +86,20 @@ class MicroServer {
       allowHeaders: ["serviceApiKey", "accessKey", "signature", "locale"],
       upload: {
         enabled: true,
-        allowedPaths: [/^.*/],
+        paths: [
+          {
+            path: /^\/api\/user\/profile\/upload$/,
+            allowedTypes: ["image/jpeg", "image/png"],
+            maxFileSize: 2 * 1024 * 1024, // 2MB
+            maxFiles: 1,
+          },
+        ],
       },
       static: {
         enabled: true,
         dirName: "client",
         ejs: {
           enabled: true,
-          extension: "html",
         },
       },
       restriction: {
@@ -109,7 +119,7 @@ class MicroServer {
     );
   }
 
-  #getReqBody(ctx: Koa.Context): RequestBody {
+  #getReqBody(ctx: Koa.Context | RouterContext): RequestBody {
     let reqHeader = _.pick(
       ctx.query as Record<string, any>,
       this.config.allowHeaders
@@ -219,72 +229,37 @@ class MicroServer {
   }
 
   async startHttpServer(): Promise<void> {
-    let multerMiddleware: any;
     const app = (this.app = new Koa());
     const httpServer = createServer(app.callback());
     const router = new Router();
-
-    if (this.config.upload.enabled) {
-      multerMiddleware = multer({
-        ...this.config.upload.multer,
-      });
-    }
 
     const clientDir = path.join(
       this.config.projectDir,
       this.config.static.dirName
     );
 
-    // Setup EJS templating support
-    if (this.config.static.enabled && this.config.static.ejs.enabled) {
-      app.use(
-        views(clientDir, {
-          extension: this.config.static.ejs.extension,
-          map: {
-            html: "ejs",
-          },
-        })
-      );
-
-      // Add a middleware to render HTML files with EJS
-      app.use(async (ctx, next) => {
-        if (
-          ctx.path.endsWith(".html") ||
-          ctx.path === "/" ||
-          ctx.path.endsWith("/")
-        ) {
-          try {
-            let viewPath = ctx.path;
-
-            // Handle root or directory paths
-            if (viewPath === "/" || viewPath.endsWith("/")) {
-              viewPath = viewPath + "index";
-            }
-
-            // Remove .html extension if present
-            if (viewPath.endsWith(".html")) {
-              viewPath = viewPath.substring(0, viewPath.length - 5);
-            }
-
-            // Remove leading slash
-            if (viewPath.startsWith("/")) {
-              viewPath = viewPath.substring(1);
-            }
-
-            await ctx.render(viewPath);
-          } catch (err) {
-            // If rendering fails, continue to next middleware (likely static file serving)
-            await next();
-          }
-        } else {
-          await next();
-        }
-      });
-    }
-
+    // Apply EJS middleware
     if (this.config.static.enabled) {
+      const ejsMiddlewares = createEjsMiddleware({
+        enabled: this.config.static.enabled,
+        clientDir,
+        ejsOptions: this.config.static.ejs,
+      });
+
+      // Apply each middleware
+      ejsMiddlewares.forEach((middleware) => app.use(middleware));
+
+      // Serve static files
       app.use(serve(clientDir));
     }
+
+    // Set up upload middleware
+    const multerMiddleware = await createUploadMiddleware({
+      enabled: this.config.upload.enabled,
+      projectDir: this.config.projectDir,
+      paths: this.config.upload.paths,
+      multerOptions: this.config.upload.multer,
+    });
 
     app.use(cors());
     app.use(bodyParser());
@@ -319,44 +294,35 @@ class MicroServer {
       }
     });
 
-    router.all(
-      "/api/:service/:logic/:func",
-      async (ctx, next) => {
-        if (this.config.upload.enabled) {
-          const isAllowed = this.config.upload.allowedPaths.some(
-            (allowedPath) => allowedPath?.test(ctx.path)
-          );
-          if (isAllowed) {
-            return multerMiddleware.array("files")(ctx, next);
-          }
-        }
-        return next();
-      },
-      async (ctx) => {
-        const { service, logic, func } = ctx.params;
+    // Apply upload middleware to the router if enabled
+    if (this.config.upload.enabled) {
+      applyUploadMiddleware(router, multerMiddleware, this.config.upload.paths);
+    }
 
-        if (!this.#verifyCallRequest(service, logic, func)) {
-          throw new Error("Invalid service.");
-        }
-        const reqBody = this.#getReqBody(ctx);
+    router.all("/api/:service/:logic/:func", async (ctx) => {
+      const { service, logic, func } = ctx.params;
 
-        const result = await this.#callFunc(service, logic, func, {
-          ...reqBody,
-          from: "api",
-          __: (key: string, ...args: any[]) =>
-            this.microI18n.__(reqBody.locale, key),
-        });
-
-        if (typeof result === "function") {
-          return await result(ctx);
-        }
-
-        ctx.body = {
-          success: true,
-          data: result ?? {},
-        };
+      if (!this.#verifyCallRequest(service, logic, func)) {
+        throw new Error("Invalid service.");
       }
-    );
+      const reqBody = this.#getReqBody(ctx);
+
+      const result = await this.#callFunc(service, logic, func, {
+        ...reqBody,
+        from: "api",
+        __: (key: string, ...args: any[]) =>
+          this.microI18n.__(reqBody.locale, key),
+      });
+
+      if (typeof result === "function") {
+        return await result(ctx);
+      }
+
+      ctx.body = {
+        success: true,
+        data: result ?? {},
+      };
+    });
 
     app.use(router.routes()).use(router.allowedMethods());
 
