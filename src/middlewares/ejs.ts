@@ -60,6 +60,7 @@ export function createEjsMiddleware(
         await ctx.render(viewPath);
         return;
       } catch (err) {
+        console.error(err);
         await next();
       }
     } else {
