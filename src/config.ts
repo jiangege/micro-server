@@ -3,23 +3,42 @@ import { promises as fs } from "fs";
 import _ from "lodash";
 import { pathToFileURL } from "url";
 
+interface ConfigOptions {
+  env?: string;
+  projectDir: string;
+  configDir: string;
+  [key: string]: any;
+}
+
 class MicroConfigLoader {
+  config: Record<string, any>;
+
   constructor() {
     this.config = {};
   }
 
-  async #loadEnvFile(rootDir, configDir, fileName) {
+  async #loadEnvFile(
+    rootDir: string,
+    configDir: string,
+    fileName: string
+  ): Promise<void> {
     try {
       const configModule = await import(
-        pathToFileURL(path.join(rootDir, configDir, fileName))
+        pathToFileURL(path.join(rootDir, configDir, fileName)).toString()
       );
       const getConfig = configModule.default;
       _.merge(this.config, getConfig(this.config));
       console.log(`loaded ${fileName}`);
-    } catch (e) {}
+    } catch (e) {
+      // Silently ignore errors when loading config files
+    }
   }
 
-  async load(rootDir, configDir, runtimeConfig = {}) {
+  async load(
+    rootDir: string,
+    configDir: string,
+    runtimeConfig: ConfigOptions = {} as ConfigOptions
+  ): Promise<Record<string, any>> {
     _.merge(this.config, {
       ...runtimeConfig,
     });
@@ -30,7 +49,9 @@ class MicroConfigLoader {
         await this.#loadEnvFile(rootDir, "", `${configDir}.js`);
         return this.config;
       }
-    } catch (e) {}
+    } catch (e) {
+      // Silently ignore errors when checking for config file
+    }
 
     await this.#loadEnvFile(rootDir, configDir, "config.default.js");
     const env = this.config.env ?? "local";

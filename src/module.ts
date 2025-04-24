@@ -3,15 +3,37 @@ import _ from "lodash";
 import path from "path";
 import { pathToFileURL } from "url";
 
+import type MicroServer from "./server.js";
+
+interface ModuleInfo {
+  name: string;
+  modifier?: string;
+  children?: ModuleInfo[];
+  exports?: Record<string, FunctionInfo>;
+}
+
+interface FunctionInfo {
+  name: string;
+  modifier?: string;
+  fn: (...args: any[]) => any;
+  service?: ModuleInfo;
+  logic?: ModuleInfo;
+}
+
 class MicroModule {
-  constructor(microServer) {
+  microServer: MicroServer;
+  funcCache: Map<string, FunctionInfo>;
+  serviceInfo: ModuleInfo | null;
+
+  constructor(microServer: MicroServer) {
     this.microServer = microServer;
     this.funcCache = new Map();
+    this.serviceInfo = null;
   }
 
-  parseModifier(text) {
+  parseModifier(text: string): { name: string; modifier?: string } | null {
     const results = /^(\$)?(\w{0,49})$/.exec(text);
-    let info = {};
+    let info: { name: string; modifier?: string } | null = { name: "" };
     if (results?.length === 2) {
       info.name = results[1];
     } else if (results?.length === 3) {
@@ -23,8 +45,12 @@ class MicroModule {
     return info;
   }
 
-  async parseInfo(rootPath, depth = 3, index = 0) {
-    let thisInfo = {};
+  async parseInfo(
+    rootPath: string,
+    depth = 3,
+    index = 0
+  ): Promise<ModuleInfo | null> {
+    let thisInfo: ModuleInfo | null = { name: "" };
 
     try {
       const fsStat = await fsp.stat(rootPath);
@@ -50,16 +76,18 @@ class MicroModule {
         if (fsStat.isFile() && path.extname(rootPath) === ".js") {
           thisInfo.name = path.basename(rootPath, path.extname(rootPath));
           thisInfo.exports = {};
-          const funcList = await import(pathToFileURL(rootPath));
+          const funcList = await import(pathToFileURL(rootPath).toString());
           for (const funcName in funcList) {
             const parsedResult = this.parseModifier(funcName);
             if (parsedResult) {
               console.log(`loaded ${rootPath}#${funcName}`);
-              thisInfo.exports[parsedResult.name] = {
-                name: parsedResult.name,
-                modifier: parsedResult.modifier,
-                fn: funcList[funcName],
-              };
+              if (thisInfo && thisInfo.exports) {
+                thisInfo.exports[parsedResult.name] = {
+                  name: parsedResult.name,
+                  modifier: parsedResult.modifier,
+                  fn: funcList[funcName],
+                };
+              }
             } else {
               thisInfo = null;
             }
@@ -91,13 +119,13 @@ class MicroModule {
     return thisInfo;
   }
 
-  async load(serviceDirPath) {
+  async load(serviceDirPath: string): Promise<ModuleInfo | null> {
     this.serviceInfo = await this.parseInfo(serviceDirPath);
     this.#buildFunctionCache();
     return this.serviceInfo;
   }
 
-  #buildFunctionCache() {
+  #buildFunctionCache(): void {
     this.funcCache.clear();
 
     if (!this.serviceInfo?.children) return;
@@ -120,7 +148,12 @@ class MicroModule {
     }
   }
 
-  async getFunc(service, logic, func) {
+  async getFunc(
+    service: string,
+    logic: string,
+    func: string,
+    reqBody?: any
+  ): Promise<FunctionInfo | null> {
     const key = `${service}:${logic}:${func}`;
     return this.funcCache.get(key) || null;
   }

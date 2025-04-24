@@ -5,23 +5,74 @@ import bodyParser from "koa-bodyparser";
 import cors from "@koa/cors";
 import multer from "@koa/multer";
 import serve from "koa-static";
+import views from "koa-views";
 import _ from "lodash";
 import Joi from "joi";
-import { createServer } from "http";
+import { createServer, Server } from "http";
 import dotenv from "dotenv";
 
 import MicroModule from "./module.js";
 import MicroConfigLoader from "./config.js";
 import MicroI18n from "./i18n.js";
 
+interface RequestBody {
+  serviceApiKey?: string;
+  accessKey?: string;
+  signature?: string;
+  locale?: string;
+  data?: Record<string, any>;
+  from?: string;
+  __?: (...args: any[]) => string;
+  _files?: any[];
+  [key: string]: any;
+}
+
+interface MicroConfig {
+  port: number;
+  projectDir: string;
+  configDir: string;
+  servicesDir: string;
+  allowHeaders: string[];
+  env?: string;
+  upload: {
+    enabled: boolean;
+    allowedPaths: RegExp[];
+    multer?: any;
+  };
+  static: {
+    enabled: boolean;
+    dirName: string;
+    ejs: {
+      enabled: boolean;
+      extension: string;
+    };
+  };
+  restriction: {
+    serviceApiKey: string | null;
+  };
+  locales: {
+    defaultLocale: string;
+  };
+  [key: string]: any;
+}
+
 class MicroServer {
-  #httpServer = null;
-  static config = {};
+  #httpServer: Server | null = null;
+  static context: Record<string, any> = {};
+
+  microModule: MicroModule;
+  microConfig: MicroConfigLoader;
+  microI18n: MicroI18n;
+  config: MicroConfig;
+  app: Koa | null;
+
+  defaultConfig: MicroConfig;
+
   constructor() {
     this.microModule = new MicroModule(this);
     this.microConfig = new MicroConfigLoader();
-    this.microI18n = new MicroI18n(this);
-    this.config = {};
+    this.microI18n = new MicroI18n();
+    this.config = {} as MicroConfig;
 
     this.defaultConfig = {
       port: 8080,
@@ -36,6 +87,10 @@ class MicroServer {
       static: {
         enabled: true,
         dirName: "client",
+        ejs: {
+          enabled: true,
+          extension: "html",
+        },
       },
       restriction: {
         serviceApiKey: null,
@@ -48,25 +103,35 @@ class MicroServer {
     this.app = null;
   }
 
-  async loadModules() {
+  async loadModules(): Promise<void> {
     await this.microModule.load(
       path.join(this.config.projectDir, this.config.servicesDir)
     );
   }
 
-  #getReqBody(ctx) {
-    let reqHeader = _.pick(ctx.query, this.config.allowHeaders);
-    let reqData = _.omit(ctx.query, this.config.allowHeaders);
+  #getReqBody(ctx: Koa.Context): RequestBody {
+    let reqHeader = _.pick(
+      ctx.query as Record<string, any>,
+      this.config.allowHeaders
+    );
+    let reqData = _.omit(
+      ctx.query as Record<string, any>,
+      this.config.allowHeaders
+    );
 
     reqData = {
       ...reqData,
-      ...(_.isPlainObject(ctx.request.body.data) ? ctx.request.body.data : {}),
-      ...(ctx.request.files ? { _files: ctx.request.files } : null),
+      ...(ctx.request.body && _.isPlainObject((ctx.request.body as any).data)
+        ? (ctx.request.body as any).data
+        : {}),
+      ...("files" in ctx.request && ctx.request.files
+        ? { _files: ctx.request.files }
+        : null),
     };
 
     reqHeader = {
       ...reqHeader,
-      ..._.pick(ctx.request.body, this.config.allowHeaders),
+      ..._.pick(ctx.request.body || {}, this.config.allowHeaders),
     };
     return {
       ...reqHeader,
@@ -74,7 +139,7 @@ class MicroServer {
     };
   }
 
-  async loadConfig(config = {}) {
+  async loadConfig(config: Partial<MicroConfig> = {}): Promise<MicroConfig> {
     const projectDir = config.projectDir ?? this.defaultConfig.projectDir;
     dotenv.config({
       path: path.join(projectDir, ".env"),
@@ -96,22 +161,33 @@ class MicroServer {
     return this.config;
   }
 
-  async start() {
+  async start(): Promise<void> {
     await this.loadModules();
     await this.startHttpServer();
   }
 
-  async call(service, logic, func, reqBody) {
+  async call(
+    service: string,
+    logic: string,
+    func: string,
+    reqBody: RequestBody
+  ): Promise<any> {
     return this.#callFunc(service, logic, func, reqBody, "server");
   }
 
-  #verifyCallRequest(service, logic, func) {
+  #verifyCallRequest(service: string, logic: string, func: string): boolean {
     return [service, logic, func].every((name) =>
       /^[a-zA-Z0-9]\w{0,49}$/.test(name)
     );
   }
 
-  async #callFunc(service, logic, func, reqBody, from = "api") {
+  async #callFunc(
+    service: string,
+    logic: string,
+    func: string,
+    reqBody: RequestBody,
+    from = "api"
+  ): Promise<any> {
     const funcInfo = await this.microModule.getFunc(service, logic, func, {
       ...reqBody,
       from,
@@ -125,8 +201,8 @@ class MicroServer {
       this.config.restriction.serviceApiKey != null &&
       [
         funcInfo.modifier,
-        funcInfo.service.modifier,
-        funcInfo.logic.modifier,
+        funcInfo.service?.modifier,
+        funcInfo.logic?.modifier,
       ].some((d) => d === "$")
     ) {
       if (this.config.restriction.serviceApiKey !== reqBody.serviceApiKey) {
@@ -142,8 +218,8 @@ class MicroServer {
     return result;
   }
 
-  async startHttpServer() {
-    let multerMiddleware;
+  async startHttpServer(): Promise<void> {
+    let multerMiddleware: any;
     const app = (this.app = new Koa());
     const httpServer = createServer(app.callback());
     const router = new Router();
@@ -154,10 +230,60 @@ class MicroServer {
       });
     }
 
-    if (this.config.static.enabled) {
+    const clientDir = path.join(
+      this.config.projectDir,
+      this.config.static.dirName
+    );
+
+    // Setup EJS templating support
+    if (this.config.static.enabled && this.config.static.ejs.enabled) {
       app.use(
-        serve(path.join(this.config.projectDir, this.config.static.dirName))
+        views(clientDir, {
+          extension: this.config.static.ejs.extension,
+          map: {
+            html: "ejs",
+          },
+        })
       );
+
+      // Add a middleware to render HTML files with EJS
+      app.use(async (ctx, next) => {
+        if (
+          ctx.path.endsWith(".html") ||
+          ctx.path === "/" ||
+          ctx.path.endsWith("/")
+        ) {
+          try {
+            let viewPath = ctx.path;
+
+            // Handle root or directory paths
+            if (viewPath === "/" || viewPath.endsWith("/")) {
+              viewPath = viewPath + "index";
+            }
+
+            // Remove .html extension if present
+            if (viewPath.endsWith(".html")) {
+              viewPath = viewPath.substring(0, viewPath.length - 5);
+            }
+
+            // Remove leading slash
+            if (viewPath.startsWith("/")) {
+              viewPath = viewPath.substring(1);
+            }
+
+            await ctx.render(viewPath);
+          } catch (err) {
+            // If rendering fails, continue to next middleware (likely static file serving)
+            await next();
+          }
+        } else {
+          await next();
+        }
+      });
+    }
+
+    if (this.config.static.enabled) {
+      app.use(serve(clientDir));
     }
 
     app.use(cors());
@@ -166,7 +292,7 @@ class MicroServer {
     app.use(async (ctx, next) => {
       try {
         await next();
-      } catch (e) {
+      } catch (e: any) {
         const reqBody = this.#getReqBody(ctx);
         console.error(e.message, e.stack);
         if (e instanceof Joi.ValidationError) {
@@ -217,7 +343,8 @@ class MicroServer {
         const result = await this.#callFunc(service, logic, func, {
           ...reqBody,
           from: "api",
-          __: (...args) => this.microI18n.__(reqBody.locale, ...args),
+          __: (key: string, ...args: any[]) =>
+            this.microI18n.__(reqBody.locale, key),
         });
 
         if (typeof result === "function") {

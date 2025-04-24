@@ -4,3 +4,4 @@ locales/
 test.js
 thunder-tests/
 /test
+/dist
