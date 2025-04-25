@@ -4,6 +4,7 @@ import Router, { RouterContext } from "koa-router";
 import bodyParser from "koa-bodyparser";
 import cors from "@koa/cors";
 import serve from "koa-static";
+import mount from "koa-mount";
 import _ from "lodash";
 import Joi from "joi";
 import { createServer, Server } from "http";
@@ -14,7 +15,6 @@ import MicroModule from "./module.js";
 import MicroConfigLoader from "./config.js";
 import MicroI18n from "./i18n.js";
 import {
-  createEjsMiddleware,
   createUploadMiddleware,
   applyUploadMiddleware,
   UploadPathConfig,
@@ -32,6 +32,12 @@ interface RequestBody {
   [key: string]: any;
 }
 
+interface StaticPathConfig {
+  path: string;
+  alias?: string;
+  options?: any;
+}
+
 interface MicroConfig {
   port: number;
   projectDir: string;
@@ -46,7 +52,7 @@ interface MicroConfig {
   };
   static: {
     enabled: boolean;
-    dirName: string;
+    paths: StaticPathConfig[];
     ejs: {
       enabled: boolean;
     };
@@ -97,9 +103,13 @@ class MicroServer {
       },
       static: {
         enabled: true,
-        dirName: "client",
+        paths: [
+          {
+            path: "client",
+          },
+        ],
         ejs: {
-          enabled: true,
+          enabled: false,
         },
       },
       restriction: {
@@ -233,24 +243,23 @@ class MicroServer {
     const httpServer = createServer(app.callback());
     const router = new Router();
 
-    const clientDir = path.join(
-      this.config.projectDir,
-      this.config.static.dirName
-    );
+    // Serve static files if enabled
+    if (this.config.static.enabled && this.config.static.paths.length > 0) {
+      for (const pathConfig of this.config.static.paths) {
+        const staticPath = path.isAbsolute(pathConfig.path)
+          ? pathConfig.path
+          : path.join(this.config.projectDir, pathConfig.path);
 
-    // Apply EJS middleware
-    if (this.config.static.enabled) {
-      const ejsMiddlewares = createEjsMiddleware({
-        enabled: this.config.static.enabled,
-        clientDir,
-        ejsOptions: this.config.static.ejs,
-      });
-
-      // Apply each middleware
-      ejsMiddlewares.forEach((middleware) => app.use(middleware));
-
-      // Serve static files
-      app.use(serve(clientDir));
+        if (pathConfig.alias) {
+          // Mount with alias
+          app.use(
+            mount(pathConfig.alias, serve(staticPath, pathConfig.options || {}))
+          );
+        } else {
+          // Mount directly
+          app.use(serve(staticPath, pathConfig.options || {}));
+        }
+      }
     }
 
     // Set up upload middleware
@@ -264,11 +273,18 @@ class MicroServer {
     app.use(cors());
     app.use(bodyParser());
 
-    app.use(async (ctx, next) => {
+    app.use(async (ctx: Koa.Context, next) => {
       try {
         await next();
       } catch (e: any) {
-        const reqBody = this.#getReqBody(ctx);
+        // Check if ctx contains required RouterContext properties
+        let reqBody: RequestBody = { data: {} };
+        try {
+          reqBody = this.#getReqBody(ctx);
+        } catch (error) {
+          console.error("Failed to get request body:", error);
+        }
+
         console.error(e.message, e.stack);
         if (e instanceof Joi.ValidationError) {
           ctx.body = {
